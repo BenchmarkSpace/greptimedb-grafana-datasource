@@ -17,11 +17,13 @@ import {
   ScopedVars,
   SupplementaryQueryOptions,
   SupplementaryQueryType,
+  TimeRange,
   TypedVariableModel,
 } from '@grafana/data';
 import {  BackendSrvRequest, DataSourceWithBackend, FetchResponse, getBackendSrv, getTemplateSrv } from '@grafana/runtime';
 import { Observable, map, firstValueFrom, catchError, of, forkJoin } from 'rxjs';
 import { CHConfig } from 'types/config';
+import { QueryCache, CacheConfig, mergeDataFrames, createBoundedSql } from './cache';
 import { EditorType, CHQuery } from 'types/sql';
 import {
   QueryType,
@@ -81,10 +83,193 @@ export class Datasource
   adHocFiltersStatus = AdHocFilterStatus.none; // ad hoc filters only work with CH 22.7+
   adHocCHVerReq = { major: 22, minor: 7 };
 
+  /** Query result cache for large time range queries */
+  private queryCache: QueryCache;
+
   constructor(instanceSettings: DataSourceInstanceSettings<CHConfig>) {
     super(instanceSettings);
     this.settings = instanceSettings;
     this.adHocFilter = new AdHocFilter();
+    this.queryCache = new QueryCache(this.getCacheConfig());
+  }
+
+  /**
+   * Convert datasource cache settings to cache config.
+   */
+  private getCacheConfig(): Partial<CacheConfig> {
+    const cacheSettings = this.settings.jsonData.cache;
+    if (!cacheSettings) {
+      return {};
+    }
+    return {
+      enabled: cacheSettings.enabled ?? true,
+      maxSizeBytes: cacheSettings.maxSizeMB ? cacheSettings.maxSizeMB * 1024 * 1024 : undefined,
+      maxAgeTTLMs: cacheSettings.maxAgeTTLMinutes ? cacheSettings.maxAgeTTLMinutes * 60 * 1000 : undefined,
+      stalenessThresholdMs: cacheSettings.stalenessThresholdMinutes
+        ? cacheSettings.stalenessThresholdMinutes * 60 * 1000
+        : undefined,
+      minTimeRangeMs: cacheSettings.minTimeRangeHours
+        ? cacheSettings.minTimeRangeHours * 60 * 60 * 1000
+        : undefined,
+      debug: cacheSettings.debug ?? false,
+    };
+  }
+
+  /**
+   * Check if caching should be used for this request.
+   */
+  private shouldUseCache(request: DataQueryRequest<CHQuery>, timeRangeMs: number): boolean {
+    const cacheConfig = this.queryCache.getConfig();
+
+    // Cache must be enabled
+    if (!cacheConfig.enabled) {
+      return false;
+    }
+
+    // Time range must be large enough to benefit from caching
+    if (timeRangeMs < cacheConfig.minTimeRangeMs) {
+      return false;
+    }
+
+    // Only cache time series and logs queries
+    const supportedQueryTypes = [QueryType.TimeSeries, QueryType.Logs];
+    const hasUnsupportedQuery = request.targets.some((t) => {
+      if (t.editorType === EditorType.Builder && t.builderOptions) {
+        return !supportedQueryTypes.includes(t.builderOptions.queryType);
+      }
+      // SQL queries could be any type, be conservative
+      return false;
+    });
+
+    return !hasUnsupportedQuery;
+  }
+
+  /**
+   * Execute a query with caching support.
+   */
+  private executeQueryWithCache(
+    target: CHQuery,
+    range: TimeRange,
+    requestStartMs: number,
+    requestEndMs: number
+  ): Observable<DataFrame[]> {
+    const rawSql = target.rawSql;
+
+    // Determine database/table from query for cache key
+    const database =
+      target.editorType === EditorType.Builder && target.builderOptions
+        ? target.builderOptions.database
+        : this.getDefaultDatabase();
+    const table =
+      target.editorType === EditorType.Builder && target.builderOptions
+        ? target.builderOptions.table
+        : '';
+    const queryType =
+      target.editorType === EditorType.Builder && target.builderOptions
+        ? target.builderOptions.queryType
+        : QueryType.TimeSeries;
+
+    const cacheKey = this.queryCache.generateKey(database, table, queryType, rawSql);
+    const splitResult = this.queryCache.lookup(cacheKey, requestStartMs, requestEndMs);
+
+    // Full cache hit - return cached data immediately
+    if (splitResult.cachedPortion && splitResult.fetchPortions.length === 0) {
+      return of(splitResult.cachedPortion.data);
+    }
+
+    // Execute queries for portions we need to fetch
+    const fetchObservables = splitResult.fetchPortions.map((portion) => {
+      const boundedSql = createBoundedSql(rawSql, portion.startTime, portion.endTime);
+      return this.executeSingleQuery(boundedSql, target);
+    });
+
+    if (fetchObservables.length === 0) {
+      // Should not happen, but handle gracefully
+      return of(splitResult.cachedPortion?.data || []);
+    }
+
+    return forkJoin(fetchObservables).pipe(
+      map((fetchResults: DataFrame[][]) => {
+        // Store fetched data in cache
+        for (let i = 0; i < splitResult.fetchPortions.length; i++) {
+          const portion = splitResult.fetchPortions[i];
+          const data = fetchResults[i];
+          if (data.length > 0) {
+            this.queryCache.store(cacheKey, data, portion.startTime, portion.endTime, rawSql);
+          }
+        }
+
+        // Merge cached and fetched data
+        const toMerge: Array<{ data: DataFrame[]; startTime: number; endTime: number }> = [];
+
+        if (splitResult.cachedPortion) {
+          toMerge.push(splitResult.cachedPortion);
+        }
+
+        for (let i = 0; i < splitResult.fetchPortions.length; i++) {
+          toMerge.push({
+            data: fetchResults[i],
+            startTime: splitResult.fetchPortions[i].startTime,
+            endTime: splitResult.fetchPortions[i].endTime,
+          });
+        }
+
+        return mergeDataFrames(...toMerge);
+      })
+    );
+  }
+
+  /**
+   * Execute a single SQL query without caching.
+   */
+  private executeSingleQuery(sql: string, target: CHQuery): Observable<DataFrame[]> {
+    return this._request('/v1/sql', { sql }).pipe(
+      map((response: FetchResponse) => {
+        if (!response.data) {
+          throw new Error(`Invalid response for target ${target.refId}`);
+        }
+        return response.data as GreptimeResponse;
+      }),
+      map((greptimeData: GreptimeResponse) => {
+        const editorType = target.editorType;
+        let builderOptions;
+        if (editorType === EditorType.SQL) {
+          builderOptions = target.meta?.builderOptions || {};
+        } else {
+          builderOptions = target.builderOptions || {};
+        }
+        const queryType =
+          target.refId === 'Trace ID' ? 'Trace' : builderOptions.queryType || target.queryType;
+
+        if (queryType === QueryType.Logs) {
+          const contextColumns = this.getLogContextColumnNames();
+          const logFrame = transformGreptimeDBLogs(greptimeData, target, contextColumns) as DataFrame;
+          return logFrame ? [logFrame] : [];
+        } else if (queryType === 'Trace') {
+          return transformGreptimeDBTraceDetails(greptimeData, builderOptions as QueryBuilderOptions);
+        } else {
+          return transformGreptimeResponseToGrafana(greptimeData, target.refId, sql);
+        }
+      }),
+      catchError((error) => {
+        console.error(`Error executing query:`, error);
+        return of([]);
+      })
+    );
+  }
+
+  /**
+   * Clear the query cache.
+   */
+  clearQueryCache(): void {
+    this.queryCache.clear();
+  }
+
+  /**
+   * Get cache statistics.
+   */
+  getQueryCacheStats() {
+    return this.queryCache.getStats();
   }
   
   _request<T = unknown>(
@@ -721,67 +906,101 @@ export class Datasource
           },
         };
       });
-    const range = request.range
+    const range = request.range;
+    const requestStartMs = range?.from.valueOf() || 0;
+    const requestEndMs = range?.to.valueOf() || Date.now();
+    const timeRangeMs = requestEndMs - requestStartMs;
+
+    // Check if we should use caching for this request
+    const useCache = this.shouldUseCache(request, timeRangeMs);
 
     const getInterpolatedSql = (rawSql: string): string => {
       const fromTimeISO = range?.from.toISOString();
       const toTimeISO = range?.to.toISOString();
-  
+
       let interpolated = getTemplateSrv().replace(rawSql); // Replace standard variables
       interpolated = interpolated.replace(/\$__fromTime/g, `'${fromTimeISO}'`);
       interpolated = interpolated.replace(/\$__toTime/g, `'${toTimeISO}'`);
       return interpolated;
     };
+
     // Create an array of Observables, one for each active target request + transformation
-  const targetObservables: Array<Observable<DataFrame[]>> = targets.map((target: CHQuery) => {
-    
-    const sql = getInterpolatedSql(target.rawSql)
-    return this._request('/v1/sql', { sql: sql }) // This returns Observable<BackendDataSourceResponse>
-      .pipe(
-        // Map 1: Extract the data from the response
-        map((response: FetchResponse) => {
+    const targetObservables: Array<Observable<DataFrame[]>> = targets.map((target: CHQuery) => {
+      // Use caching for eligible queries
+      if (useCache && range) {
+        // Use the raw SQL with macros for cache key, interpolated for execution
+        const targetWithInterpolatedSql = {
+          ...target,
+          rawSql: getInterpolatedSql(target.rawSql),
+        };
+        return this.executeQueryWithCache(targetWithInterpolatedSql, range, requestStartMs, requestEndMs).pipe(
+          catchError((error) => {
+            console.error(`Error processing target ${target.refId}:`, error);
+            const errorFrame = new MutableDataFrame({
+              refId: target.refId,
+              fields: [
+                {
+                  name: 'Error',
+                  values: [`Failed to process query for ${target.refId}: ${error?.message || 'Unknown error'}`],
+                },
+              ],
+              meta: { preferredVisualisationType: 'table' },
+            });
+            return of([errorFrame]);
+          })
+        );
+      }
+
+      // Original non-cached flow
+      const sql = getInterpolatedSql(target.rawSql);
+      return this._request('/v1/sql', { sql: sql }) // This returns Observable<BackendDataSourceResponse>
+        .pipe(
+          // Map 1: Extract the data from the response
+          map((response: FetchResponse) => {
             // --- Optional: Add response validation here ---
             if (!response.data /* || check response.data.code etc. */) {
-                console.error('Invalid response data received:', response);
-                // Throw an error to be caught by catchError
-                throw new Error(`Invalid response structure received for target ${target.refId}`);
+              console.error('Invalid response data received:', response);
+              // Throw an error to be caught by catchError
+              throw new Error(`Invalid response structure received for target ${target.refId}`);
             }
             return response.data as GreptimeResponse; // Assert or validate type
-        }),
-        // Map 2: Transform the GreptimeDB response data into Grafana DataFrames
-        map((greptimeData: GreptimeResponse) => {
-          // Pass the appropriate format hint if needed by your transformer
-          // const formatHint = target.formatHint || GrafanaDataFormat.TimeSeries;
-          const editorType = target.editorType
-          let builderOptions
-          if (editorType === EditorType.SQL) {
-            builderOptions = target.meta?.builderOptions || {}
-          } else {
-            builderOptions = target.builderOptions || {}
-          }
-          const queryType = target.refId === 'Trace ID' ? 'Trace' : builderOptions.queryType || target.queryType
-          if (queryType === QueryType.Logs) {
-            const contextColumns = this.getLogContextColumnNames()
-            const logFrame = transformGreptimeDBLogs(greptimeData, target, contextColumns) as DataFrame
-            return logFrame? [logFrame] : []
-          } else if (queryType === 'Trace') {
-            const frames = transformGreptimeDBTraceDetails(greptimeData, builderOptions as QueryBuilderOptions)
-            
-            return frames;
-          } else {
-            return transformGreptimeResponseToGrafana(greptimeData, target.refId, sql);
-          }
-          
-          
-        }),
-        // --- Error Handling Per Target ---
-        // Catch errors specifically for this target's request/transformation
-        catchError(error => {
-          console.error(`Error processing target ${target.refId}:`, error);
-          // Return an Observable emitting an empty array or a specific error frame
-          // This prevents one failed target from failing the entire query if desired
-          const errorFrame = new MutableDataFrame({
-            refId: target.refId,
+          }),
+          // Map 2: Transform the GreptimeDB response data into Grafana DataFrames
+          map((greptimeData: GreptimeResponse) => {
+            // Pass the appropriate format hint if needed by your transformer
+            // const formatHint = target.formatHint || GrafanaDataFormat.TimeSeries;
+            const editorType = target.editorType;
+            let builderOptions;
+            if (editorType === EditorType.SQL) {
+              builderOptions = target.meta?.builderOptions || {};
+            } else {
+              builderOptions = target.builderOptions || {};
+            }
+            const queryType =
+              target.refId === 'Trace ID' ? 'Trace' : builderOptions.queryType || target.queryType;
+            if (queryType === QueryType.Logs) {
+              const contextColumns = this.getLogContextColumnNames();
+              const logFrame = transformGreptimeDBLogs(greptimeData, target, contextColumns) as DataFrame;
+              return logFrame ? [logFrame] : [];
+            } else if (queryType === 'Trace') {
+              const frames = transformGreptimeDBTraceDetails(
+                greptimeData,
+                builderOptions as QueryBuilderOptions
+              );
+
+              return frames;
+            } else {
+              return transformGreptimeResponseToGrafana(greptimeData, target.refId, sql);
+            }
+          }),
+          // --- Error Handling Per Target ---
+          // Catch errors specifically for this target's request/transformation
+          catchError((error) => {
+            console.error(`Error processing target ${target.refId}:`, error);
+            // Return an Observable emitting an empty array or a specific error frame
+            // This prevents one failed target from failing the entire query if desired
+            const errorFrame = new MutableDataFrame({
+              refId: target.refId,
             fields: [
                 { name: 'Error', values: [`Failed to process query for ${target.refId}: ${error?.message || 'Unknown error'}`] }
             ],

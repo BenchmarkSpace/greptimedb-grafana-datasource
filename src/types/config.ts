@@ -43,6 +43,11 @@ export interface CHConfig extends DataSourceJsonData {
 
   customSettings?: CHCustomSetting[];
   enableSecureSocksProxy?: boolean;
+
+  /**
+   * Query result caching configuration
+   */
+  cache?: CHCacheConfig;
 }
 
 interface CHSecureConfigProperties {
@@ -110,4 +115,22 @@ export interface AliasTableEntry {
 export enum Protocol {
   Native = 'native',
   Http = 'http',
+}
+
+/**
+ * Query result caching configuration
+ */
+export interface CHCacheConfig {
+  /** Enable/disable caching (default: true) */
+  enabled?: boolean;
+  /** Maximum cache size in MB (default: 50) */
+  maxSizeMB?: number;
+  /** Maximum age of cache entries in minutes (default: 30) */
+  maxAgeTTLMinutes?: number;
+  /** Data older than this (minutes before now) is cacheable (default: 5) */
+  stalenessThresholdMinutes?: number;
+  /** Minimum time range in hours to enable caching (default: 1) */
+  minTimeRangeHours?: number;
+  /** Enable debug logging (default: false) */
+  debug?: boolean;
 }

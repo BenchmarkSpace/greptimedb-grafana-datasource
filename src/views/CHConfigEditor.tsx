@@ -12,6 +12,7 @@ import {
   CHSecureConfig,
   CHLogsConfig,
   CHTracesConfig,
+  CHCacheConfig,
   AliasTableEntry
 } from 'types/config';
 import { gte as versionGte } from 'semver';
@@ -26,6 +27,7 @@ import { QuerySettingsConfig } from 'components/configEditor/QuerySettingsConfig
 import allLabels from 'labels';
 import {  useConfigDefaults } from './CHConfigEditorHooks';
 import {AliasTableConfig} from "../components/configEditor/AliasTableConfig";
+import { CacheConfig } from 'components/configEditor/CacheConfig';
 
 export interface ConfigEditorProps extends DataSourcePluginOptionsEditorProps<CHConfig, CHSecureConfig> {}
 
@@ -89,6 +91,19 @@ export const ConfigEditor: React.FC<ConfigEditorProps> = (props) => {
       jsonData: {
         ...options.jsonData,
         aliasTables
+      }
+    });
+  };
+
+  const onCacheConfigChange = (key: keyof CHCacheConfig, value: boolean | number) => {
+    onOptionsChange({
+      ...options,
+      jsonData: {
+        ...options.jsonData,
+        cache: {
+          ...options.jsonData.cache,
+          [key]: value
+        }
       }
     });
   };
@@ -272,6 +287,17 @@ export const ConfigEditor: React.FC<ConfigEditorProps> = (props) => {
           onTagsColumnChange={c => onTracesConfigChange('tagsColumn', c)}
           onServiceTagsColumnChange={c => onTracesConfigChange('serviceTagsColumn', c)}
           onEventsColumnPrefixChange={c => onTracesConfigChange('eventsColumnPrefix', c)}
+        />
+
+        <Divider />
+        <CacheConfig
+          cacheConfig={jsonData.cache}
+          onEnabledChange={(v) => onCacheConfigChange('enabled', v)}
+          onMaxSizeMBChange={(v) => onCacheConfigChange('maxSizeMB', v)}
+          onMaxAgeTTLMinutesChange={(v) => onCacheConfigChange('maxAgeTTLMinutes', v)}
+          onStalenessThresholdMinutesChange={(v) => onCacheConfigChange('stalenessThresholdMinutes', v)}
+          onMinTimeRangeHoursChange={(v) => onCacheConfigChange('minTimeRangeHours', v)}
+          onDebugChange={(v) => onCacheConfigChange('debug', v)}
         />
 
         <Divider />
