@@ -918,7 +918,8 @@ export class Datasource
       const fromTimeISO = range?.from.toISOString();
       const toTimeISO = range?.to.toISOString();
 
-      let interpolated = getTemplateSrv().replace(rawSql); // Replace standard variables
+      // Pass scopedVars to replace $__interval_ms, $__timeFilter, and other Grafana macros
+      let interpolated = getTemplateSrv().replace(rawSql, request.scopedVars);
       interpolated = interpolated.replace(/\$__fromTime/g, `'${fromTimeISO}'`);
       interpolated = interpolated.replace(/\$__toTime/g, `'${toTimeISO}'`);
       return interpolated;
