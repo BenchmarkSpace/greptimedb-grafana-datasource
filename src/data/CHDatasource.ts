@@ -144,11 +144,11 @@ export class Datasource
   private shouldUseCache(request: DataQueryRequest<CHQuery>, timeRangeMs: number): boolean {
     const cacheConfig = this.queryCache.getConfig();
 
-    // Always log cache decision for debugging
+    // Log cache decision for debugging (uses console.warn because production strips console.log)
     const logCacheDecision = (reason: string, useCache: boolean) => {
       if (cacheConfig.debug) {
-        console.log(`[QueryCache] shouldUseCache: ${useCache} - ${reason}`);
-        console.log(`[QueryCache] Config:`, JSON.stringify(cacheConfig, null, 2));
+        console.warn(`[QueryCache] shouldUseCache: ${useCache} - ${reason}`);
+        console.warn(`[QueryCache] Config:`, JSON.stringify(cacheConfig, null, 2));
       }
     };
 
@@ -942,18 +942,17 @@ export class Datasource
 
   query(request: DataQueryRequest<CHQuery>): Observable<DataQueryResponse> {
     // Log cache configuration on each query for debugging
+    // Uses console.warn because production builds strip console.log
     const cacheConfig = this.queryCache.getConfig();
-    // Always log a brief message so we can verify the code path is reached
-    console.log('[GreptimeDB] Query initiated, cache enabled:', cacheConfig.enabled, 'debug:', cacheConfig.debug);
     if (cacheConfig.debug) {
-      console.log('[QueryCache] Query initiated. Cache config:', {
+      console.warn('[QueryCache] Query initiated. Cache config:', {
         enabled: cacheConfig.enabled,
         debug: cacheConfig.debug,
         minTimeRangeMs: cacheConfig.minTimeRangeMs,
         stalenessThresholdMs: cacheConfig.stalenessThresholdMs,
         maxAgeTTLMs: cacheConfig.maxAgeTTLMs,
       });
-      console.log('[QueryCache] Raw settings from jsonData:', this.settings.jsonData.cache);
+      console.warn('[QueryCache] Raw settings from jsonData:', this.settings.jsonData.cache);
     }
 
     const targets = request.targets

@@ -343,10 +343,11 @@ export class QueryCache {
 
   /**
    * Log a message if debug mode is enabled.
+   * Uses console.warn because production builds strip console.log
    */
   private log(message: string): void {
     if (this.config.debug) {
-      console.log(`[QueryCache] ${message}`);
+      console.warn(`[QueryCache] ${message}`);
     }
   }
 }
