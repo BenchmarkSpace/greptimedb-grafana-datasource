@@ -1,17 +1,26 @@
 import React from 'react';
-import { Switch, Field, Input } from '@grafana/ui';
+import { Switch, Field, Input, Select, HorizontalGroup } from '@grafana/ui';
+import { SelectableValue } from '@grafana/data';
 import { ConfigSection } from 'components/experimental/ConfigSection';
-import { CHCacheConfig } from 'types/config';
+import { CHCacheConfig, CacheTimeUnit } from 'types/config';
 
 interface CacheConfigProps {
   cacheConfig?: CHCacheConfig;
   onEnabledChange: (enabled: boolean) => void;
   onMaxSizeMBChange: (maxSizeMB: number) => void;
   onMaxAgeTTLMinutesChange: (maxAgeTTLMinutes: number) => void;
-  onStalenessThresholdMinutesChange: (stalenessThresholdMinutes: number) => void;
-  onMinTimeRangeHoursChange: (minTimeRangeHours: number) => void;
+  onStalenessThresholdValueChange: (value: number) => void;
+  onStalenessThresholdUnitChange: (unit: CacheTimeUnit) => void;
+  onMinTimeRangeValueChange: (value: number) => void;
+  onMinTimeRangeUnitChange: (unit: CacheTimeUnit) => void;
   onDebugChange: (debug: boolean) => void;
 }
+
+const timeUnitOptions: Array<SelectableValue<CacheTimeUnit>> = [
+  { label: 'Seconds', value: 'seconds' },
+  { label: 'Minutes', value: 'minutes' },
+  { label: 'Hours', value: 'hours' },
+];
 
 export const CacheConfig = (props: CacheConfigProps) => {
   const {
@@ -19,16 +28,20 @@ export const CacheConfig = (props: CacheConfigProps) => {
     onEnabledChange,
     onMaxSizeMBChange,
     onMaxAgeTTLMinutesChange,
-    onStalenessThresholdMinutesChange,
-    onMinTimeRangeHoursChange,
+    onStalenessThresholdValueChange,
+    onStalenessThresholdUnitChange,
+    onMinTimeRangeValueChange,
+    onMinTimeRangeUnitChange,
     onDebugChange,
   } = props;
 
   const enabled = cacheConfig?.enabled ?? true;
   const maxSizeMB = cacheConfig?.maxSizeMB ?? 50;
   const maxAgeTTLMinutes = cacheConfig?.maxAgeTTLMinutes ?? 30;
-  const stalenessThresholdMinutes = cacheConfig?.stalenessThresholdMinutes ?? 5;
-  const minTimeRangeHours = cacheConfig?.minTimeRangeHours ?? 1;
+  const stalenessThresholdValue = cacheConfig?.stalenessThresholdValue ?? 5;
+  const stalenessThresholdUnit = cacheConfig?.stalenessThresholdUnit ?? 'seconds';
+  const minTimeRangeValue = cacheConfig?.minTimeRangeValue ?? 15;
+  const minTimeRangeUnit = cacheConfig?.minTimeRangeUnit ?? 'seconds';
   const debug = cacheConfig?.debug ?? false;
 
   return (
@@ -89,42 +102,55 @@ export const CacheConfig = (props: CacheConfigProps) => {
           </Field>
 
           <Field
-            label="Staleness Threshold (minutes)"
+            label="Staleness Threshold"
             description="Only data older than this threshold is cached. Recent data is always fetched fresh."
           >
-            <Input
-              type="number"
-              value={stalenessThresholdMinutes}
-              min={1}
-              max={60}
-              width={15}
-              onChange={(e) => {
-                const value = parseInt(e.currentTarget.value, 10);
-                if (!isNaN(value) && value > 0) {
-                  onStalenessThresholdMinutesChange(value);
-                }
-              }}
-            />
+            <HorizontalGroup>
+              <Input
+                type="number"
+                value={stalenessThresholdValue}
+                min={1}
+                width={10}
+                onChange={(e) => {
+                  const value = parseInt(e.currentTarget.value, 10);
+                  if (!isNaN(value) && value > 0) {
+                    onStalenessThresholdValueChange(value);
+                  }
+                }}
+              />
+              <Select<CacheTimeUnit>
+                options={timeUnitOptions}
+                value={stalenessThresholdUnit}
+                onChange={(v) => v.value && onStalenessThresholdUnitChange(v.value)}
+                width={15}
+              />
+            </HorizontalGroup>
           </Field>
 
           <Field
-            label="Min Time Range (hours)"
+            label="Min Time Range"
             description="Caching is only enabled for queries with time ranges larger than this"
           >
-            <Input
-              type="number"
-              value={minTimeRangeHours}
-              min={0.5}
-              max={168}
-              step={0.5}
-              width={15}
-              onChange={(e) => {
-                const value = parseFloat(e.currentTarget.value);
-                if (!isNaN(value) && value > 0) {
-                  onMinTimeRangeHoursChange(value);
-                }
-              }}
-            />
+            <HorizontalGroup>
+              <Input
+                type="number"
+                value={minTimeRangeValue}
+                min={1}
+                width={10}
+                onChange={(e) => {
+                  const value = parseInt(e.currentTarget.value, 10);
+                  if (!isNaN(value) && value > 0) {
+                    onMinTimeRangeValueChange(value);
+                  }
+                }}
+              />
+              <Select<CacheTimeUnit>
+                options={timeUnitOptions}
+                value={minTimeRangeUnit}
+                onChange={(v) => v.value && onMinTimeRangeUnitChange(v.value)}
+                width={15}
+              />
+            </HorizontalGroup>
           </Field>
 
           <Field

@@ -13,6 +13,7 @@ import {
   CHLogsConfig,
   CHTracesConfig,
   CHCacheConfig,
+  CacheTimeUnit,
   AliasTableEntry
 } from 'types/config';
 import { gte as versionGte } from 'semver';
@@ -95,7 +96,7 @@ export const ConfigEditor: React.FC<ConfigEditorProps> = (props) => {
     });
   };
 
-  const onCacheConfigChange = (key: keyof CHCacheConfig, value: boolean | number) => {
+  const onCacheConfigChange = (key: keyof CHCacheConfig, value: boolean | number | CacheTimeUnit) => {
     onOptionsChange({
       ...options,
       jsonData: {
@@ -295,8 +296,10 @@ export const ConfigEditor: React.FC<ConfigEditorProps> = (props) => {
           onEnabledChange={(v) => onCacheConfigChange('enabled', v)}
           onMaxSizeMBChange={(v) => onCacheConfigChange('maxSizeMB', v)}
           onMaxAgeTTLMinutesChange={(v) => onCacheConfigChange('maxAgeTTLMinutes', v)}
-          onStalenessThresholdMinutesChange={(v) => onCacheConfigChange('stalenessThresholdMinutes', v)}
-          onMinTimeRangeHoursChange={(v) => onCacheConfigChange('minTimeRangeHours', v)}
+          onStalenessThresholdValueChange={(v) => onCacheConfigChange('stalenessThresholdValue', v)}
+          onStalenessThresholdUnitChange={(v) => onCacheConfigChange('stalenessThresholdUnit', v)}
+          onMinTimeRangeValueChange={(v) => onCacheConfigChange('minTimeRangeValue', v)}
+          onMinTimeRangeUnitChange={(v) => onCacheConfigChange('minTimeRangeUnit', v)}
           onDebugChange={(v) => onCacheConfigChange('debug', v)}
         />
 

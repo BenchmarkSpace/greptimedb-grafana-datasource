@@ -118,6 +118,11 @@ export enum Protocol {
 }
 
 /**
+ * Time unit for cache configuration
+ */
+export type CacheTimeUnit = 'seconds' | 'minutes' | 'hours';
+
+/**
  * Query result caching configuration
  */
 export interface CHCacheConfig {
@@ -127,10 +132,17 @@ export interface CHCacheConfig {
   maxSizeMB?: number;
   /** Maximum age of cache entries in minutes (default: 30) */
   maxAgeTTLMinutes?: number;
-  /** Data older than this (minutes before now) is cacheable (default: 5) */
-  stalenessThresholdMinutes?: number;
-  /** Minimum time range in hours to enable caching (default: 1) */
-  minTimeRangeHours?: number;
+
+  /** Staleness threshold value (default: 5) */
+  stalenessThresholdValue?: number;
+  /** Staleness threshold unit (default: 'seconds') */
+  stalenessThresholdUnit?: CacheTimeUnit;
+
+  /** Minimum time range value (default: 15) */
+  minTimeRangeValue?: number;
+  /** Minimum time range unit (default: 'seconds') */
+  minTimeRangeUnit?: CacheTimeUnit;
+
   /** Enable debug logging (default: false) */
   debug?: boolean;
 }

@@ -94,6 +94,22 @@ export class Datasource
   }
 
   /**
+   * Convert time value and unit to milliseconds.
+   */
+  private convertToMs(value: number, unit: 'seconds' | 'minutes' | 'hours'): number {
+    switch (unit) {
+      case 'seconds':
+        return value * 1000;
+      case 'minutes':
+        return value * 60 * 1000;
+      case 'hours':
+        return value * 60 * 60 * 1000;
+      default:
+        return value * 60 * 1000; // Default to minutes
+    }
+  }
+
+  /**
    * Convert datasource cache settings to cache config.
    */
   private getCacheConfig(): Partial<CacheConfig> {
@@ -101,16 +117,23 @@ export class Datasource
     if (!cacheSettings) {
       return {};
     }
+
+    // Convert staleness threshold to ms
+    const stalenessValue = cacheSettings.stalenessThresholdValue ?? 5;
+    const stalenessUnit = cacheSettings.stalenessThresholdUnit ?? 'minutes';
+    const stalenessMs = this.convertToMs(stalenessValue, stalenessUnit);
+
+    // Convert min time range to ms
+    const minTimeRangeValue = cacheSettings.minTimeRangeValue ?? 1;
+    const minTimeRangeUnit = cacheSettings.minTimeRangeUnit ?? 'hours';
+    const minTimeRangeMs = this.convertToMs(minTimeRangeValue, minTimeRangeUnit);
+
     return {
       enabled: cacheSettings.enabled ?? true,
       maxSizeBytes: cacheSettings.maxSizeMB ? cacheSettings.maxSizeMB * 1024 * 1024 : undefined,
       maxAgeTTLMs: cacheSettings.maxAgeTTLMinutes ? cacheSettings.maxAgeTTLMinutes * 60 * 1000 : undefined,
-      stalenessThresholdMs: cacheSettings.stalenessThresholdMinutes
-        ? cacheSettings.stalenessThresholdMinutes * 60 * 1000
-        : undefined,
-      minTimeRangeMs: cacheSettings.minTimeRangeHours
-        ? cacheSettings.minTimeRangeHours * 60 * 60 * 1000
-        : undefined,
+      stalenessThresholdMs: stalenessMs,
+      minTimeRangeMs: minTimeRangeMs,
       debug: cacheSettings.debug ?? false,
     };
   }
