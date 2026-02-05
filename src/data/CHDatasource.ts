@@ -144,13 +144,23 @@ export class Datasource
   private shouldUseCache(request: DataQueryRequest<CHQuery>, timeRangeMs: number): boolean {
     const cacheConfig = this.queryCache.getConfig();
 
+    // Always log cache decision for debugging
+    const logCacheDecision = (reason: string, useCache: boolean) => {
+      if (cacheConfig.debug) {
+        console.log(`[QueryCache] shouldUseCache: ${useCache} - ${reason}`);
+        console.log(`[QueryCache] Config:`, JSON.stringify(cacheConfig, null, 2));
+      }
+    };
+
     // Cache must be enabled
     if (!cacheConfig.enabled) {
+      logCacheDecision('cache disabled', false);
       return false;
     }
 
     // Time range must be large enough to benefit from caching
     if (timeRangeMs < cacheConfig.minTimeRangeMs) {
+      logCacheDecision(`time range ${timeRangeMs}ms < minTimeRange ${cacheConfig.minTimeRangeMs}ms`, false);
       return false;
     }
 
@@ -164,7 +174,13 @@ export class Datasource
       return false;
     });
 
-    return !hasUnsupportedQuery;
+    if (hasUnsupportedQuery) {
+      logCacheDecision('unsupported query type', false);
+      return false;
+    }
+
+    logCacheDecision('all checks passed', true);
+    return true;
   }
 
   /**
@@ -925,6 +941,21 @@ export class Datasource
   }
 
   query(request: DataQueryRequest<CHQuery>): Observable<DataQueryResponse> {
+    // Log cache configuration on each query for debugging
+    const cacheConfig = this.queryCache.getConfig();
+    // Always log a brief message so we can verify the code path is reached
+    console.log('[GreptimeDB] Query initiated, cache enabled:', cacheConfig.enabled, 'debug:', cacheConfig.debug);
+    if (cacheConfig.debug) {
+      console.log('[QueryCache] Query initiated. Cache config:', {
+        enabled: cacheConfig.enabled,
+        debug: cacheConfig.debug,
+        minTimeRangeMs: cacheConfig.minTimeRangeMs,
+        stalenessThresholdMs: cacheConfig.stalenessThresholdMs,
+        maxAgeTTLMs: cacheConfig.maxAgeTTLMs,
+      });
+      console.log('[QueryCache] Raw settings from jsonData:', this.settings.jsonData.cache);
+    }
+
     const targets = request.targets
       // filters out queries disabled in UI
       .filter((t) => t.hide !== true)
