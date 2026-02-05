@@ -20,7 +20,92 @@ function findTimeFieldIndex(frame: DataFrame): number {
 }
 
 /**
+ * Get timestamp in milliseconds from a value.
+ */
+function getTimeMs(value: unknown): number {
+  return typeof value === 'number' ? value : new Date(value as string | Date).getTime();
+}
+
+/**
+ * Binary search to find the first index where time >= target.
+ * Assumes the array is sorted in ascending order.
+ *
+ * @param timeValues - Array of time values (sorted ascending)
+ * @param target - Target time in ms
+ * @returns Index of first element >= target, or array length if none found
+ */
+function binarySearchLowerBound(timeValues: unknown[], target: number): number {
+  let left = 0;
+  let right = timeValues.length;
+
+  while (left < right) {
+    const mid = Math.floor((left + right) / 2);
+    const midTime = getTimeMs(timeValues[mid]);
+    if (midTime < target) {
+      left = mid + 1;
+    } else {
+      right = mid;
+    }
+  }
+
+  return left;
+}
+
+/**
+ * Binary search to find the first index where time >= target (exclusive upper bound).
+ * Assumes the array is sorted in ascending order.
+ *
+ * @param timeValues - Array of time values (sorted ascending)
+ * @param target - Target time in ms
+ * @returns Index of first element >= target, or array length if none found
+ */
+function binarySearchUpperBound(timeValues: unknown[], target: number): number {
+  let left = 0;
+  let right = timeValues.length;
+
+  while (left < right) {
+    const mid = Math.floor((left + right) / 2);
+    const midTime = getTimeMs(timeValues[mid]);
+    if (midTime < target) {
+      left = mid + 1;
+    } else {
+      right = mid;
+    }
+  }
+
+  return left;
+}
+
+/**
+ * Check if an array of time values is sorted in ascending order.
+ * Only checks a sample for performance.
+ */
+function isSortedAscending(timeValues: unknown[]): boolean {
+  if (timeValues.length <= 1) {
+    return true;
+  }
+
+  // Check first few and last few elements as a heuristic
+  const checkCount = Math.min(10, timeValues.length - 1);
+  for (let i = 0; i < checkCount; i++) {
+    if (getTimeMs(timeValues[i]) > getTimeMs(timeValues[i + 1])) {
+      return false;
+    }
+  }
+
+  // Also check near the end
+  for (let i = timeValues.length - checkCount - 1; i < timeValues.length - 1; i++) {
+    if (i >= 0 && getTimeMs(timeValues[i]) > getTimeMs(timeValues[i + 1])) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
  * Filters DataFrame rows to only include data within a time range.
+ * Uses binary search for sorted time series data (O(log n)), falls back to linear scan otherwise.
  *
  * @param frames - Array of DataFrames to filter
  * @param startTime - Start time in ms (inclusive)
@@ -43,12 +128,56 @@ export function filterDataFrameByTimeRange(
     const timeField = frame.fields[timeFieldIndex];
     const timeValues = timeField.values;
 
-    // Find indices within the time range
+    // Empty frame - return as-is
+    if (timeValues.length === 0) {
+      return frame;
+    }
+
+    let startIdx: number;
+    let endIdx: number;
+
+    // Use binary search if data is sorted (common for time series)
+    if (isSortedAscending(timeValues)) {
+      startIdx = binarySearchLowerBound(timeValues, startTime);
+      endIdx = binarySearchUpperBound(timeValues, endTime);
+
+      // If all rows are valid, return original frame
+      if (startIdx === 0 && endIdx === timeValues.length) {
+        return frame;
+      }
+
+      // If no valid rows, return empty frame
+      if (startIdx >= endIdx) {
+        const emptyFields: Field[] = frame.fields.map((field) => ({
+          ...field,
+          values: [],
+          config: { ...field.config },
+        }));
+        return {
+          ...frame,
+          fields: emptyFields,
+          length: 0,
+        };
+      }
+
+      // Create filtered fields using slice (efficient for contiguous range)
+      const filteredFields: Field[] = frame.fields.map((field) => ({
+        ...field,
+        values: field.values.slice(startIdx, endIdx),
+        config: { ...field.config },
+      }));
+
+      return {
+        ...frame,
+        fields: filteredFields,
+        length: endIdx - startIdx,
+      };
+    }
+
+    // Fallback to linear scan for unsorted data
     const validIndices: number[] = [];
     for (let i = 0; i < timeValues.length; i++) {
-      const t = timeValues[i];
-      // Handle both number timestamps and Date objects
-      const timeMs = typeof t === 'number' ? t : new Date(t).getTime();
+      const timeMs = getTimeMs(timeValues[i]);
       if (timeMs >= startTime && timeMs < endTime) {
         validIndices.push(i);
       }

@@ -9,7 +9,7 @@ import {
   DEFAULT_CACHE_CONFIG,
 } from './types';
 import { hashString, normalizeSqlForCache } from './sqlNormalizer';
-import { filterDataFrameByTimeRange, estimateDataFrameSize } from './dataFrameUtils';
+import { filterDataFrameByTimeRange, estimateDataFrameSize, mergeDataFrames } from './dataFrameUtils';
 
 /**
  * QueryCache manages caching of query results to avoid re-fetching
@@ -138,15 +138,29 @@ export class QueryCache {
       this.log(`Need to fetch before cache: [${requestedStart}, ${Math.min(entry.startTime, requestedEnd)}]`);
     }
 
+    // If cached data ends before the staleness threshold, fetch the gap
+    // This handles: [cached]---gap---[staleness threshold]---[fresh data]---[requestedEnd]
+    if (entry.endTime < cacheableEnd && entry.endTime < requestedEnd) {
+      const gapStart = Math.max(entry.endTime, requestedStart);
+      const gapEnd = Math.min(cacheableEnd, requestedEnd);
+      if (gapEnd > gapStart) {
+        fetchPortions.push({
+          startTime: gapStart,
+          endTime: gapEnd,
+        });
+        this.log(`Need to fetch gap: [${gapStart}, ${gapEnd}]`);
+      }
+    }
+
     // Always fetch fresh data (within staleness threshold)
     // This ensures we get the latest data
-    const freshDataStart = Math.max(cacheableEnd, entry.endTime, requestedStart);
-    if (freshDataStart < requestedEnd) {
+    if (cacheableEnd < requestedEnd) {
+      const freshStart = Math.max(cacheableEnd, requestedStart);
       fetchPortions.push({
-        startTime: freshDataStart,
+        startTime: freshStart,
         endTime: requestedEnd,
       });
-      this.log(`Need to fetch fresh data: [${freshDataStart}, ${requestedEnd}]`);
+      this.log(`Need to fetch fresh data: [${freshStart}, ${requestedEnd}]`);
     }
 
     // Determine usable cached portion
@@ -220,19 +234,20 @@ export class QueryCache {
       // Extend existing entry
       this.log('Extending existing cache entry');
 
-      // Combine the data - the merging will happen when we retrieve
-      // For now, we extend the time range and append data
       const newStartTime = Math.min(existingEntry.startTime, startTime);
       const newEndTime = Math.max(existingEntry.endTime, endTime);
 
-      // Simple approach: keep both sets of data, filtering will handle overlap
-      const combinedData = [...existingEntry.data, ...data];
+      // Merge and deduplicate data to prevent unbounded cache growth
+      const mergedData = mergeDataFrames(
+        { data: existingEntry.data, startTime: existingEntry.startTime, endTime: existingEntry.endTime },
+        { data, startTime, endTime }
+      );
 
-      existingEntry.data = combinedData;
+      existingEntry.data = mergedData;
       existingEntry.startTime = newStartTime;
       existingEntry.endTime = newEndTime;
       existingEntry.lastAccessedAt = now;
-      existingEntry.sizeBytes = estimateDataFrameSize(combinedData);
+      existingEntry.sizeBytes = estimateDataFrameSize(mergedData);
     } else {
       // Create new entry
       this.log('Creating new cache entry');
