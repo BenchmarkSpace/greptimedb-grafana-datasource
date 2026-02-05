@@ -123,9 +123,9 @@ export class Datasource
     const stalenessUnit = cacheSettings.stalenessThresholdUnit ?? 'minutes';
     const stalenessMs = this.convertToMs(stalenessValue, stalenessUnit);
 
-    // Convert min time range to ms
-    const minTimeRangeValue = cacheSettings.minTimeRangeValue ?? 1;
-    const minTimeRangeUnit = cacheSettings.minTimeRangeUnit ?? 'hours';
+    // Convert min time range to ms (default unit is 'seconds' to match UI component)
+    const minTimeRangeValue = cacheSettings.minTimeRangeValue ?? 15;
+    const minTimeRangeUnit = cacheSettings.minTimeRangeUnit ?? 'seconds';
     const minTimeRangeMs = this.convertToMs(minTimeRangeValue, minTimeRangeUnit);
 
     return {
