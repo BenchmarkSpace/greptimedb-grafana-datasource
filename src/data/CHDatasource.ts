@@ -169,12 +169,19 @@ export class Datasource
 
   /**
    * Execute a query with caching support.
+   *
+   * @param target - Query target with RAW SQL (macros like $__fromTime not yet replaced)
+   * @param range - Time range for the query
+   * @param requestStartMs - Start time in ms
+   * @param requestEndMs - End time in ms
+   * @param scopedVars - Scoped variables for template interpolation (e.g., $__interval)
    */
   private executeQueryWithCache(
     target: CHQuery,
     range: TimeRange,
     requestStartMs: number,
-    requestEndMs: number
+    requestEndMs: number,
+    scopedVars?: ScopedVars
   ): Observable<DataFrame[]> {
     const rawSql = target.rawSql;
 
@@ -202,8 +209,11 @@ export class Datasource
 
     // Execute queries for portions we need to fetch
     const fetchObservables = splitResult.fetchPortions.map((portion) => {
+      // First replace time macros with the portion's time bounds
       const boundedSql = createBoundedSql(rawSql, portion.startTime, portion.endTime);
-      return this.executeSingleQuery(boundedSql, target);
+      // Then interpolate other template variables (like $__interval)
+      const interpolatedSql = getTemplateSrv().replace(boundedSql, scopedVars);
+      return this.executeSingleQuery(interpolatedSql, target);
     });
 
     if (fetchObservables.length === 0) {
@@ -952,12 +962,8 @@ export class Datasource
     const targetObservables: Array<Observable<DataFrame[]>> = targets.map((target: CHQuery) => {
       // Use caching for eligible queries
       if (useCache && range) {
-        // Use the raw SQL with macros for cache key, interpolated for execution
-        const targetWithInterpolatedSql = {
-          ...target,
-          rawSql: getInterpolatedSql(target.rawSql),
-        };
-        return this.executeQueryWithCache(targetWithInterpolatedSql, range, requestStartMs, requestEndMs).pipe(
+        // Pass raw SQL (with $__fromTime/$__toTime macros intact) so cache can split time ranges
+        return this.executeQueryWithCache(target, range, requestStartMs, requestEndMs, request.scopedVars).pipe(
           catchError((error) => {
             console.error(`Error processing target ${target.refId}:`, error);
             const errorFrame = new MutableDataFrame({
