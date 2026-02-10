@@ -23,7 +23,7 @@ import {
 import {  BackendSrvRequest, DataSourceWithBackend, FetchResponse, getBackendSrv, getTemplateSrv } from '@grafana/runtime';
 import { Observable, map, firstValueFrom, catchError, of, forkJoin } from 'rxjs';
 import { CHConfig } from 'types/config';
-import { QueryCache, CacheConfig, mergeDataFrames, createBoundedSql } from './cache';
+import { QueryCache, CacheConfig, mergeDataFrames, createBoundedSql, RequestDeduplicator } from './cache';
 import { EditorType, CHQuery } from 'types/sql';
 import {
   QueryType,
@@ -86,11 +86,18 @@ export class Datasource
   /** Query result cache for large time range queries */
   private queryCache: QueryCache;
 
+  /** Request deduplicator to prevent duplicate concurrent requests */
+  private requestDeduplicator: RequestDeduplicator;
+
   constructor(instanceSettings: DataSourceInstanceSettings<CHConfig>) {
     super(instanceSettings);
     this.settings = instanceSettings;
     this.adHocFilter = new AdHocFilter();
     this.queryCache = new QueryCache(this.getCacheConfig());
+    this.requestDeduplicator = new RequestDeduplicator({
+      debug: this.getCacheConfig().debug,
+      resultCacheDurationMs: 50, // Cache results for 50ms to handle rapid duplicate requests
+    });
   }
 
   /**
@@ -228,6 +235,13 @@ export class Datasource
 
     // Execute queries for portions we need to fetch
     const debug = this.queryCache.getConfig().debug;
+    if (debug && splitResult.fetchPortions.length > 0) {
+      const cachedMs = splitResult.cachedPortion
+        ? splitResult.cachedPortion.endTime - splitResult.cachedPortion.startTime
+        : 0;
+      const fetchMs = splitResult.fetchPortions.reduce((sum, p) => sum + (p.endTime - p.startTime), 0);
+      console.warn(`[QueryCache] >>> FETCH SUMMARY: cached=${(cachedMs/1000).toFixed(0)}s, fetching=${(fetchMs/1000).toFixed(0)}s (${splitResult.fetchPortions.length} portions)`);
+    }
     const fetchObservables = splitResult.fetchPortions.map((portion) => {
       // First replace time macros with the portion's time bounds
       const boundedSql = createBoundedSql(rawSql, portion.startTime, portion.endTime);
@@ -276,53 +290,60 @@ export class Datasource
   }
 
   /**
-   * Execute a single SQL query without caching.
+   * Execute a single SQL query with deduplication.
+   * If the same SQL is already in-flight, shares the existing request.
    */
   private executeSingleQuery(sql: string, target: CHQuery, debug = false): Observable<DataFrame[]> {
-    const startTime = performance.now();
-    return this._request('/v1/sql', { sql }).pipe(
-      map((response: FetchResponse) => {
-        if (debug) {
-          console.warn(`[QueryCache] Network request took ${(performance.now() - startTime).toFixed(0)}ms`);
-        }
-        if (!response.data) {
-          throw new Error(`Invalid response for target ${target.refId}`);
-        }
-        return response.data as GreptimeResponse;
-      }),
-      map((greptimeData: GreptimeResponse) => {
-        const transformStart = performance.now();
-        const editorType = target.editorType;
-        let builderOptions;
-        if (editorType === EditorType.SQL) {
-          builderOptions = target.meta?.builderOptions || {};
-        } else {
-          builderOptions = target.builderOptions || {};
-        }
-        const queryType =
-          target.refId === 'Trace ID' ? 'Trace' : builderOptions.queryType || target.queryType;
+    // Generate a key for deduplication based on the SQL
+    const dedupeKey = this.requestDeduplicator.generateKey(sql);
 
-        let result: DataFrame[];
-        if (queryType === QueryType.Logs) {
-          const contextColumns = this.getLogContextColumnNames();
-          const logFrame = transformGreptimeDBLogs(greptimeData, target, contextColumns) as DataFrame;
-          result = logFrame ? [logFrame] : [];
-        } else if (queryType === 'Trace') {
-          result = transformGreptimeDBTraceDetails(greptimeData, builderOptions as QueryBuilderOptions);
-        } else {
-          result = transformGreptimeResponseToGrafana(greptimeData, target.refId, sql);
-        }
+    // Use deduplicator to prevent duplicate concurrent requests
+    return this.requestDeduplicator.execute(dedupeKey, () => {
+      const startTime = performance.now();
+      return this._request('/v1/sql', { sql }).pipe(
+        map((response: FetchResponse) => {
+          if (debug) {
+            console.warn(`[QueryCache] Network request took ${(performance.now() - startTime).toFixed(0)}ms`);
+          }
+          if (!response.data) {
+            throw new Error(`Invalid response for target ${target.refId}`);
+          }
+          return response.data as GreptimeResponse;
+        }),
+        map((greptimeData: GreptimeResponse) => {
+          const transformStart = performance.now();
+          const editorType = target.editorType;
+          let builderOptions;
+          if (editorType === EditorType.SQL) {
+            builderOptions = target.meta?.builderOptions || {};
+          } else {
+            builderOptions = target.builderOptions || {};
+          }
+          const queryType =
+            target.refId === 'Trace ID' ? 'Trace' : builderOptions.queryType || target.queryType;
 
-        if (debug) {
-          console.warn(`[QueryCache] Transform took ${(performance.now() - transformStart).toFixed(0)}ms, rows: ${result[0]?.length ?? 0}`);
-        }
-        return result;
-      }),
-      catchError((error) => {
-        console.error(`Error executing query:`, error);
-        return of([]);
-      })
-    );
+          let result: DataFrame[];
+          if (queryType === QueryType.Logs) {
+            const contextColumns = this.getLogContextColumnNames();
+            const logFrame = transformGreptimeDBLogs(greptimeData, target, contextColumns) as DataFrame;
+            result = logFrame ? [logFrame] : [];
+          } else if (queryType === 'Trace') {
+            result = transformGreptimeDBTraceDetails(greptimeData, builderOptions as QueryBuilderOptions);
+          } else {
+            result = transformGreptimeResponseToGrafana(greptimeData, target.refId, sql);
+          }
+
+          if (debug) {
+            console.warn(`[QueryCache] Transform took ${(performance.now() - transformStart).toFixed(0)}ms, rows: ${result[0]?.length ?? 0}`);
+          }
+          return result;
+        }),
+        catchError((error) => {
+          console.error(`Error executing query:`, error);
+          return of([]);
+        })
+      );
+    });
   }
 
   /**

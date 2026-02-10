@@ -98,7 +98,10 @@ export class QueryCache {
     const now = Date.now();
     const cacheableEnd = now - this.config.stalenessThresholdMs;
 
-    this.log(`Cache lookup: ${keyString}, range: [${requestedStart}, ${requestedEnd}]`);
+    // If entire requested range is historical (before staleness threshold), no fresh fetch needed
+    const isFullyHistorical = requestedEnd <= cacheableEnd;
+
+    this.log(`Cache lookup: ${keyString}, range: [${requestedStart}, ${requestedEnd}], fullyHistorical: ${isFullyHistorical}`);
 
     // If no cache entry or cache is disabled
     if (!entry || !this.config.enabled) {
@@ -154,9 +157,9 @@ export class QueryCache {
       }
     }
 
-    // Always fetch fresh data (within staleness threshold)
-    // This ensures we get the latest data
-    if (cacheableEnd < requestedEnd) {
+    // Only fetch fresh data if the requested range extends into the "fresh" window
+    // If the entire range is historical, skip fresh fetch
+    if (!isFullyHistorical && cacheableEnd < requestedEnd) {
       const freshStart = Math.max(cacheableEnd, requestedStart);
       fetchPortions.push({
         startTime: freshStart,
@@ -166,8 +169,11 @@ export class QueryCache {
     }
 
     // Determine usable cached portion
+    // For fully historical queries, we can use the entire cached range
     const cacheStart = Math.max(entry.startTime, requestedStart);
-    const cacheEnd = Math.min(entry.endTime, cacheableEnd, requestedEnd);
+    const cacheEnd = isFullyHistorical
+      ? Math.min(entry.endTime, requestedEnd)
+      : Math.min(entry.endTime, cacheableEnd, requestedEnd);
 
     if (cacheEnd > cacheStart) {
       // We have usable cached data
