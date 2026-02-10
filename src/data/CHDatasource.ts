@@ -227,12 +227,16 @@ export class Datasource
     }
 
     // Execute queries for portions we need to fetch
+    const debug = this.queryCache.getConfig().debug;
     const fetchObservables = splitResult.fetchPortions.map((portion) => {
       // First replace time macros with the portion's time bounds
       const boundedSql = createBoundedSql(rawSql, portion.startTime, portion.endTime);
       // Then interpolate other template variables (like $__interval)
       const interpolatedSql = getTemplateSrv().replace(boundedSql, scopedVars);
-      return this.executeSingleQuery(interpolatedSql, target);
+      if (debug) {
+        console.warn(`[QueryCache] Fetching portion [${new Date(portion.startTime).toISOString()}, ${new Date(portion.endTime).toISOString()}]`);
+      }
+      return this.executeSingleQuery(interpolatedSql, target, debug);
     });
 
     if (fetchObservables.length === 0) {
@@ -274,15 +278,20 @@ export class Datasource
   /**
    * Execute a single SQL query without caching.
    */
-  private executeSingleQuery(sql: string, target: CHQuery): Observable<DataFrame[]> {
+  private executeSingleQuery(sql: string, target: CHQuery, debug = false): Observable<DataFrame[]> {
+    const startTime = performance.now();
     return this._request('/v1/sql', { sql }).pipe(
       map((response: FetchResponse) => {
+        if (debug) {
+          console.warn(`[QueryCache] Network request took ${(performance.now() - startTime).toFixed(0)}ms`);
+        }
         if (!response.data) {
           throw new Error(`Invalid response for target ${target.refId}`);
         }
         return response.data as GreptimeResponse;
       }),
       map((greptimeData: GreptimeResponse) => {
+        const transformStart = performance.now();
         const editorType = target.editorType;
         let builderOptions;
         if (editorType === EditorType.SQL) {
@@ -293,15 +302,21 @@ export class Datasource
         const queryType =
           target.refId === 'Trace ID' ? 'Trace' : builderOptions.queryType || target.queryType;
 
+        let result: DataFrame[];
         if (queryType === QueryType.Logs) {
           const contextColumns = this.getLogContextColumnNames();
           const logFrame = transformGreptimeDBLogs(greptimeData, target, contextColumns) as DataFrame;
-          return logFrame ? [logFrame] : [];
+          result = logFrame ? [logFrame] : [];
         } else if (queryType === 'Trace') {
-          return transformGreptimeDBTraceDetails(greptimeData, builderOptions as QueryBuilderOptions);
+          result = transformGreptimeDBTraceDetails(greptimeData, builderOptions as QueryBuilderOptions);
         } else {
-          return transformGreptimeResponseToGrafana(greptimeData, target.refId, sql);
+          result = transformGreptimeResponseToGrafana(greptimeData, target.refId, sql);
         }
+
+        if (debug) {
+          console.warn(`[QueryCache] Transform took ${(performance.now() - transformStart).toFixed(0)}ms, rows: ${result[0]?.length ?? 0}`);
+        }
+        return result;
       }),
       catchError((error) => {
         console.error(`Error executing query:`, error);
@@ -944,18 +959,19 @@ export class Datasource
   }
 
   query(request: DataQueryRequest<CHQuery>): Observable<DataQueryResponse> {
+    const queryStartTime = performance.now();
     // Log cache configuration on each query for debugging
     // Uses console.warn because production builds strip console.log
     const cacheConfig = this.queryCache.getConfig();
     if (cacheConfig.debug) {
-      console.warn('[QueryCache] Query initiated. Cache config:', {
+      console.warn('[QueryCache] ========== Query Started ==========');
+      console.warn('[QueryCache] Cache config:', {
         enabled: cacheConfig.enabled,
         debug: cacheConfig.debug,
         minTimeRangeMs: cacheConfig.minTimeRangeMs,
         stalenessThresholdMs: cacheConfig.stalenessThresholdMs,
         maxAgeTTLMs: cacheConfig.maxAgeTTLMs,
       });
-      console.warn('[QueryCache] Raw settings from jsonData:', this.settings.jsonData.cache);
     }
 
     const targets = request.targets
@@ -1091,6 +1107,14 @@ export class Datasource
         request,  // Pass the original query request
         { data: flattenedData } // Pass the combined data frames
       );
+
+      // Log total query time
+      if (cacheConfig.debug) {
+        const totalRows = flattenedData.reduce((sum, df) => sum + (df.length ?? 0), 0);
+        console.warn(`[QueryCache] ========== Query Complete ==========`);
+        console.warn(`[QueryCache] Total time: ${(performance.now() - queryStartTime).toFixed(0)}ms, frames: ${flattenedData.length}, total rows: ${totalRows}`);
+      }
+
       // Return the final structure Grafana expects
       return finalResponse; // { data: DataFrame[] }
     }),
