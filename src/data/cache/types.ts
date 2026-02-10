@@ -13,6 +13,8 @@ export interface CacheKey {
   table: string;
   /** Query type for validation */
   queryType: QueryType;
+  /** Interval in ms - different intervals need separate cache entries */
+  intervalMs?: number;
 }
 
 /**

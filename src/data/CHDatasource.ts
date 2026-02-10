@@ -191,13 +191,15 @@ export class Datasource
    * @param requestStartMs - Start time in ms
    * @param requestEndMs - End time in ms
    * @param scopedVars - Scoped variables for template interpolation (e.g., $__interval)
+   * @param intervalMs - The interval in milliseconds for this query
    */
   private executeQueryWithCache(
     target: CHQuery,
     range: TimeRange,
     requestStartMs: number,
     requestEndMs: number,
-    scopedVars?: ScopedVars
+    scopedVars?: ScopedVars,
+    intervalMs?: number
   ): Observable<DataFrame[]> {
     const rawSql = target.rawSql;
 
@@ -215,7 +217,8 @@ export class Datasource
         ? target.builderOptions.queryType
         : QueryType.TimeSeries;
 
-    const cacheKey = this.queryCache.generateKey(database, table, queryType, rawSql);
+    // Include intervalMs in cache key so different zoom levels get separate cache entries
+    const cacheKey = this.queryCache.generateKey(database, table, queryType, rawSql, intervalMs);
     const splitResult = this.queryCache.lookup(cacheKey, requestStartMs, requestEndMs);
 
     // Full cache hit - return cached data immediately
@@ -988,12 +991,15 @@ export class Datasource
       return interpolated;
     };
 
+    // Get the interval in ms for cache key differentiation (different zoom levels = different cache entries)
+    const intervalMs = request.scopedVars?.__interval_ms?.value as number | undefined;
+
     // Create an array of Observables, one for each active target request + transformation
     const targetObservables: Array<Observable<DataFrame[]>> = targets.map((target: CHQuery) => {
       // Use caching for eligible queries
       if (useCache && range) {
         // Pass raw SQL (with $__fromTime/$__toTime macros intact) so cache can split time ranges
-        return this.executeQueryWithCache(target, range, requestStartMs, requestEndMs, request.scopedVars).pipe(
+        return this.executeQueryWithCache(target, range, requestStartMs, requestEndMs, request.scopedVars, intervalMs).pipe(
           catchError((error) => {
             console.error(`Error processing target ${target.refId}:`, error);
             const errorFrame = new MutableDataFrame({

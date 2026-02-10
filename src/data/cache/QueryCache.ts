@@ -69,8 +69,9 @@ export class QueryCache {
    * @param table - Table name
    * @param queryType - Type of query
    * @param rawSql - The raw SQL query (will be normalized)
+   * @param intervalMs - The interval in milliseconds (different zoom levels need separate caches)
    */
-  generateKey(database: string, table: string, queryType: QueryType, rawSql: string): CacheKey {
+  generateKey(database: string, table: string, queryType: QueryType, rawSql: string, intervalMs?: number): CacheKey {
     const normalizedSql = normalizeSqlForCache(rawSql);
     const queryHash = hashString(normalizedSql);
 
@@ -79,6 +80,7 @@ export class QueryCache {
       database,
       table,
       queryType,
+      intervalMs,
     };
   }
 
@@ -297,7 +299,9 @@ export class QueryCache {
    * Convert cache key to string for Map storage.
    */
   private keyToString(key: CacheKey): string {
-    return `${key.database}:${key.table}:${key.queryType}:${key.queryHash}`;
+    // Include intervalMs in key so different zoom levels get separate cache entries
+    const interval = key.intervalMs ?? 'default';
+    return `${key.database}:${key.table}:${key.queryType}:${key.queryHash}:${interval}`;
   }
 
   /**
